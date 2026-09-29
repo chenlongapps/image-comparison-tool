@@ -17,13 +17,13 @@ import './globals.css';
 export const metadata: Metadata = {
   // 标题配置
   title: {
-    default: '多媒体对比工具 - 在线图片与视频同步对比',
+    default: '多媒体对比工具 - 图片、动图与视频对比',
     template: '%s - 多媒体对比工具'
   },
   // 页面描述
-  description: '一款功能强大的在线多媒体对比工具，支持图片与视频的同步缩放、平移、播放同步。适用于设计师、摄影师、视频剪辑师等需要精确比较细节的用户。',
+  description: '在线对比图片、GIF、APNG、动画 WebP 和视频，支持同步缩放、平移，以及动图与视频的联动播放和进度定位。',
   // SEO 关键词
-  keywords: ['图片对比', '视频对比', '多媒体比较', '同步缩放', '平移对比', '在线视频对比', '设计师工具', '视频剪辑工具'],
+  keywords: ['图片对比', '动图对比', 'GIF 对比', 'APNG 对比', 'WebP 对比', '视频对比', '多媒体比较', '同步缩放', '平移对比'],
   // 作者信息
   authors: [{ name: 'Chen Long' }],
   creator: 'Chen Long',
@@ -33,8 +33,8 @@ export const metadata: Metadata = {
     type: 'website',
     locale: 'zh_CN',
     url: 'https://epiphany-cl.github.io/image-comparison-tool/',
-    title: '多媒体对比工具 - 在线图片与视频同步对比',
-    description: '一款功能强大的在线多媒体对比工具，支持图片与视频的同步缩放、平移及播放同步。',
+    title: '多媒体对比工具 - 图片、动图与视频对比',
+    description: '在线对比图片、GIF、APNG、动画 WebP 和视频，支持同步视图与动态媒体联动。',
     siteName: '多媒体对比工具'
   },
   // 搜索引擎爬虫配置
@@ -146,14 +146,14 @@ export default function RootLayout({
               '@context': 'https://schema.org',
               '@type': 'WebApplication',
               'name': '多媒体对比工具',
-              'description': '一款功能强大的在线图片与视频对比工具，支持同步缩放、平移及播放同步。',
+              'description': '在线对比图片、GIF、APNG、动画 WebP 和视频，支持同步视图与动态媒体联动。',
               'applicationCategory': 'DesignApplication',
               'operatingSystem': 'All',
               'url': 'https://epiphany-cl.github.io/image-comparison-tool/',
               'featureList': [
                 '双面板实时对比',
-                '图片与视频同步缩放和平移',
-                '视频播放进度自动同步',
+                '图片、动图与视频同步缩放和平移',
+                '动图和视频联动播放、暂停及进度定位',
                 '支持拖拽上传及剪贴板粘贴',
                 '深色模式支持',
                 '触控板支持（捏合缩放、双指滑动平移）'

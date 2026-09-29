@@ -27,8 +27,16 @@ export const en: Translations = {
 
     // 状态消息
     processing: 'Processing...',
-    dropOrClick: 'Drop or click to upload images/videos',
+    dropOrClick: 'Drop or click to upload images, animations, or videos',
     loadError: 'Failed to load, please check the file format',
+    animationResourceError: 'Browser resources could not decode this animation; the previous media was kept',
+    animationDecodeError: 'Could not decode the animation; the previous media was kept',
+    playbackProgress: 'Playback progress',
+    play: 'Play',
+    pause: 'Pause',
+    mute: 'Mute',
+    unmute: 'Unmute',
+    deleteMedia: 'Remove media',
 
     // 语言切换
     language: 'English',
@@ -36,19 +44,18 @@ export const en: Translations = {
 
     // 粘贴功能
     pasteSuccess: 'Content pasted to {side}',
-    pasteError: 'Paste failed, please ensure you have copied an image or video',
     // 帮助系统
     help: 'Help',
     helpTitle: 'Media Comparison Tool Guide',
-    helpDescription: 'Quick guide to get started with image and video comparison',
+    helpDescription: 'Quick guide to comparing images, animations, and videos',
     versionLabel: 'Version',
 
     // 帮助 - 开始使用
     gettingStarted: 'Getting Started',
     uploadImages: '1. Upload Files',
-    uploadImagesDesc: 'Drag and drop images or videos to the left/right areas, or click to select files',
+    uploadImagesDesc: 'Drop images, GIFs, APNGs, animated WebPs, or videos onto either side, or click to select files',
     compareImages: '2. Compare Media',
-    compareImagesDesc: 'Automatic synchronized zoom and pan to view the same position; videos will play in sync',
+    compareImagesDesc: 'Zoom and pan together; animations and videos share play/pause actions and seek by percentage of their own durations',
 
     // 帮助 - 交互手势
     gestures: 'Gestures',
@@ -63,17 +70,17 @@ export const en: Translations = {
     alignImagesDesc: 'Click the unlock button in the top bar to move each side independently for alignment',
     keyboardShortcuts: 'Keyboard Shortcuts',
     keyboardImageDesc: 'In image mode, use the arrow keys to move any loaded images in sync',
-    keyboardVideoDesc: 'In video mode, use Left/Right to step the timeline by 1/2 second and Space to play or pause',
-    keyboardMixedDesc: 'When one side is an image and the other is a video, arrow keys are disabled to avoid conflicts',
+    keyboardVideoDesc: 'For animations or videos, Left/Right steps by 0.5 seconds, Space plays or pauses, and Reset pauses at the start',
+    keyboardMixedDesc: 'Locked panels share controls; unlocked panels are independent. Each keeps its own speed and can end independently.',
 
     // 帮助 - 常见问题
     faq: 'FAQ',
     faq1Question: 'How to upload files?',
-    faq1Answer: 'You can drag and drop images or videos to the dashed areas, or click to select files. Also supports Ctrl+V to paste copied content.',
+    faq1Answer: 'Drop, select, or paste images, animations, and videos. Pasting preserves animation only when the clipboard provides the original animated file.',
     faq2Question: 'What is the zoom range?',
     faq2Answer: 'Supports zoom from 0.1x to 10x. You can adjust using +/- buttons, mouse wheel, or pinch gestures.',
-    faq3Question: 'Does it support video comparison?',
-    faq3Answer: 'Yes, you can upload two videos for comparison. Their playback progress, play/pause state will be synchronized automatically.',
+    faq3Question: 'Can I compare animations and videos?',
+    faq3Answer: 'Yes. GIF, APNG, animated WebP, and video are supported. Animations load paused on the first frame, and only multi-frame files get playback controls. Locked panels share play/pause and seek by relative progress.',
     faq4Question: 'How is my data handled?',
     faq4Answer: 'All files are processed locally in your browser and never uploaded to any server. Data is automatically cleared when you close the browser.',
 

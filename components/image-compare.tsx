@@ -20,8 +20,11 @@ import { useGesture } from '@use-gesture/react';
 import { Button } from '@/components/ui/button';
 import LiquidGlass from '@/components/ui/liquid-glass';
 import { HelpModal } from '@/components/help-modal';
+import { advanceAnimation, clampTime, frameIndexAtTime, linkedSeekTime, setPlaying, type AnimationMetadata, type PlaybackState } from '@/lib/animation';
+import { AnimationSession } from '@/lib/animation-session';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
+import { useLoadingVisibility } from '@/lib/use-loading-visibility';
 import type { Translations } from '@/lib/locales';
 
 /**
@@ -43,20 +46,19 @@ interface MediaInfo {
   width: number;      // 原始宽度
   height: number;     // 原始高度
   baseScale: number;  // 基础缩放比例（使媒体适应容器）
-  type: 'image' | 'video'; // 媒体类型
+  type: 'image' | 'animation' | 'video'; // 媒体类型
+  animation?: AnimationMetadata;
+  animationSession?: AnimationSession;
 }
 
 /**
  * 视频控制接口
  */
-interface VideoControls {
-  isPlaying: boolean;
-  currentTime: number;
-  duration: number;
+interface DynamicControls extends PlaybackState {
   isMuted: boolean;
 }
 
-type KeyboardMediaMode = 'none' | 'image' | 'video' | 'mixed';
+type KeyboardMediaMode = 'none' | 'image' | 'dynamic';
 type PanelSide = 'left' | 'right';
 
 interface DragMemo {
@@ -66,7 +68,7 @@ interface DragMemo {
 }
 
 const IMAGE_KEYBOARD_PAN_STEP = 32;
-const VIDEO_FRAME_STEP = 0.5;
+const DYNAMIC_STEP = 0.5;
 const FILE_NAME_HEAD_LEN = 14;
 const FILE_NAME_TAIL_LEN = 10;
 const FILE_NAME_FONT = '12px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
@@ -158,21 +160,68 @@ function isGestureBlockedTarget(target: EventTarget | null) {
   return target instanceof Element && target.closest('[data-gesture-blocker="true"]') !== null;
 }
 
-function isVideoProgressTarget(target: EventTarget | null): target is HTMLInputElement {
-  return target instanceof HTMLInputElement && target.dataset.videoProgress === 'true';
+function isDynamicProgressTarget(target: EventTarget | null): target is HTMLInputElement {
+  return target instanceof HTMLInputElement && target.dataset.dynamicProgress === 'true';
 }
 
-function isFinitePositiveNumber(value: number) {
-  return Number.isFinite(value) && value > 0;
-}
-
-function getVideoProgressSide(target: EventTarget | null): PanelSide | null {
-  if (!isVideoProgressTarget(target)) {
+function getDynamicProgressSide(target: EventTarget | null): PanelSide | null {
+  if (!isDynamicProgressTarget(target)) {
     return null;
   }
 
-  const side = target.dataset.videoSide;
+  const side = target.dataset.dynamicSide;
   return side === 'left' || side === 'right' ? side : null;
+}
+
+function cancelledError() {
+  return new DOMException('Upload cancelled', 'AbortError');
+}
+
+function isVideoFile(file: File) {
+  return file.type.startsWith('video/') || /\.(mp4|webm|mov|m4v|ogv)$/i.test(file.name);
+}
+
+function isSupportedMediaFile(file: File) {
+  return file.type.startsWith('image/') || isVideoFile(file) || /\.(gif|png|apng|webp|jpe?g|bmp|avif|svg)$/i.test(file.name);
+}
+
+function isAnimationCandidate(file: File) {
+  return ['image/gif', 'image/png', 'image/apng', 'image/webp'].includes(file.type) || /\.(gif|png|apng|webp)$/i.test(file.name);
+}
+
+function loadDimensions(url: string, isVideo: boolean, signal: AbortSignal): Promise<{ width: number; height: number; duration: number }> {
+  return new Promise((resolve, reject) => {
+    const element = isVideo ? document.createElement('video') : new Image();
+    const cleanup = () => {
+      element.onload = null;
+      element.onerror = null;
+      if (element instanceof HTMLVideoElement) { element.onloadedmetadata = null; }
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      element.removeAttribute('src');
+      reject(cancelledError());
+    };
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener('abort', onAbort, { once: true });
+    element.onerror = () => { cleanup(); reject(new Error('media-load-failed')); };
+    if (element instanceof HTMLVideoElement) {
+      element.preload = 'metadata';
+      element.onloadedmetadata = () => {
+        const result = { width: element.videoWidth, height: element.videoHeight, duration: element.duration };
+        cleanup();
+        resolve(result);
+      };
+    } else {
+      element.onload = () => {
+        const result = { width: element.naturalWidth, height: element.naturalHeight, duration: 0 };
+        cleanup();
+        resolve(result);
+      };
+    }
+    element.src = url;
+  });
 }
 
 /**
@@ -190,10 +239,11 @@ interface MediaPanelProps {
   t: Translations;                           // 翻译文本
   activeTouchCountRef: { current: number };  // 当前页面触摸点数量
   onActivate: () => void;                    // 激活当前面板
-  videoControls?: VideoControls;             // 视频控制状态
-  onVideoControlChange?: (controls: Partial<VideoControls>) => void; // 视频控制变化回调
+  dynamicControls?: DynamicControls;         // 动态媒体控制状态
+  onDynamicControlChange?: (controls: Partial<DynamicControls>) => void;
   onTogglePlay?: (side: PanelSide) => void;  // 按侧播放/暂停
   onSeek?: (time: number) => void;           // 按比例同步拖动进度条
+  onAnimationError: (error: Error) => void;
 }
 
 /**
@@ -207,12 +257,18 @@ interface MediaPanelProps {
  * - 提供删除按钮
  * - 提供视频播放控制
  */
-function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, label, isLoading, t, activeTouchCountRef, onActivate, videoControls, onVideoControlChange, onTogglePlay, onSeek }: MediaPanelProps) {
+function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, label, isLoading, t, activeTouchCountRef, onActivate, dynamicControls, onDynamicControlChange, onTogglePlay, onSeek, onAnimationError }: MediaPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const videoControlsRef = useRef(videoControls);
-  videoControlsRef.current = videoControls;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dynamicControlsRef = useRef(dynamicControls);
+  dynamicControlsRef.current = dynamicControls;
+  const drawnFrameRef = useRef(-1);
+  const drawnMediaRef = useRef<MediaInfo | null>(null);
   const [panelWidth, setPanelWidth] = useState(0);
+  // 动图首帧尚未绘制的标记：仅在此期间显示“正在处理”遮罩，
+  // 播放/拖动过程中的逐帧解码不驱动遮罩，避免按帧频闪烁。
+  const [firstFramePending, setFirstFramePending] = useState(false);
 
   /**
    * 处理拖拽上传
@@ -222,7 +278,7 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
       onActivate();
       e.preventDefault();
       const file = e.dataTransfer.files[0];
-      if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) {
+      if (file && isSupportedMediaFile(file)) {
         onUpload(file);
       }
     },
@@ -244,44 +300,90 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
     [onActivate, onUpload]
   );
 
-  /**
-   * 同步视频状态到 DOM
-   */
+  /** 同步视频状态到 DOM。 */
   useEffect(() => {
-    if (media?.type === 'video' && videoRef.current && videoControls) {
-      if (videoControls.isPlaying && videoRef.current.paused) {
-        videoRef.current.play().catch(() => {});
-      } else if (!videoControls.isPlaying && !videoRef.current.paused) {
+    if (media?.type === 'video' && videoRef.current && dynamicControls) {
+      if (dynamicControls.isPlaying && videoRef.current.paused) {
+        videoRef.current.play().catch(() => onDynamicControlChange?.({ isPlaying: false }));
+      } else if (!dynamicControls.isPlaying && !videoRef.current.paused) {
         videoRef.current.pause();
       }
 
-      if (Math.abs(videoRef.current.currentTime - videoControls.currentTime) > 0.1) {
-        videoRef.current.currentTime = videoControls.currentTime;
+      if (Math.abs(videoRef.current.currentTime - dynamicControls.currentTime) > 0.1) {
+        videoRef.current.currentTime = dynamicControls.currentTime;
       }
 
-      videoRef.current.muted = videoControls.isMuted;
+      videoRef.current.muted = dynamicControls.isMuted;
     }
-  }, [media?.type, videoControls]);
+  }, [media?.type, dynamicControls, onDynamicControlChange]);
 
-  /**
-   * 视频播放定时器：驱动 currentTime 前进
-   */
+  /** 动图按实际经过时间播放，不改变文件中的帧时长。 */
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (videoControls?.isPlaying) {
-      interval = setInterval(() => {
-        const current = videoControlsRef.current;
-        if (!current || !onVideoControlChange) {return;}
-        const newTime = current.currentTime + 0.05;
-        if (newTime >= current.duration) {
-          onVideoControlChange({ isPlaying: false, currentTime: current.duration });
-        } else {
-          onVideoControlChange({ currentTime: newTime });
+    if (media?.type !== 'animation' || !media.animation || !dynamicControls?.isPlaying || !onDynamicControlChange) { return; }
+    let frameRequest = 0;
+    let lastTimestamp: number | null = null;
+    const tick = (timestamp: number) => {
+      if (lastTimestamp !== null) {
+        const current = dynamicControlsRef.current;
+        if (current?.isPlaying) {
+          const next = advanceAnimation(current, (timestamp - lastTimestamp) / 1000, media.animation!.loopCount);
+          dynamicControlsRef.current = { ...current, ...next };
+          onDynamicControlChange(next);
+          if (!next.isPlaying) { return; }
         }
-      }, 50);
+      }
+      lastTimestamp = timestamp;
+      frameRequest = requestAnimationFrame(tick);
+    };
+    frameRequest = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameRequest);
+  }, [media, dynamicControls?.isPlaying, onDynamicControlChange]);
+
+  /** 首帧和后续画面均由会话持有，绘制后立即关闭 ImageBitmap。 */
+  useEffect(() => {
+    if (media?.type !== 'animation' || !media.animationSession || !canvasRef.current) {
+      setFirstFramePending(false);
+      return;
     }
-    return () => clearInterval(interval);
-  }, [videoControls?.isPlaying, onVideoControlChange]);
+    // 新动图挂载后首帧还没绘制，此时用遮罩兜住空白画布。
+    setFirstFramePending(true);
+    drawnMediaRef.current = media;
+    drawnFrameRef.current = -1;
+    const context = canvasRef.current.getContext('2d');
+    if (!context) { return; }
+    const first = media.animationSession.takeFirstFrame();
+    if (first) {
+      context.drawImage(first, 0, 0);
+      first.close();
+      drawnFrameRef.current = 0;
+      setFirstFramePending(false);
+    }
+    return media.animationSession.subscribe((bitmap, index) => {
+      try {
+        if (drawnMediaRef.current === media && canvasRef.current) {
+          canvasRef.current.getContext('2d')?.drawImage(bitmap, 0, 0);
+          drawnFrameRef.current = index;
+          setFirstFramePending(false);
+        }
+      } finally {
+        bitmap.close();
+      }
+    }, (error) => {
+      setFirstFramePending(false);
+      onDynamicControlChange?.({ isPlaying: false });
+      onAnimationError(error);
+    });
+  }, [media, onAnimationError, onDynamicControlChange]);
+
+  // 仅负责请求目标帧：解码期间画布保留上一帧，不切换 loading 状态，
+  // 否则播放或拖动进度条时遮罩会按帧率反复明灭，造成屏幕闪烁。
+  useEffect(() => {
+    if (media?.type !== 'animation' || !media.animation || !media.animationSession) { return; }
+    const index = frameIndexAtTime(media.animation.durations, dynamicControls?.currentTime ?? 0);
+    if (index !== drawnFrameRef.current) {
+      media.animationSession.requestFrame(index);
+    }
+  }, [media, dynamicControls?.currentTime]);
 
   /**
    * 监听面板宽度变化，用于计算文件名可用宽度
@@ -442,6 +544,9 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
   // 计算实际显示的缩放比例（基础缩放 * 视图缩放）
   const displayScale = media ? viewState.scale * media.baseScale : viewState.scale;
 
+  // 遮罩状态做延迟展示与最短展示时长处理，避免短解码任务造成屏幕闪烁。
+  const showProcessing = useLoadingVisibility(isLoading || (firstFramePending && media?.type === 'animation'));
+
   return (
     <div
       ref={containerRef}
@@ -456,13 +561,7 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
       onPointerDown={() => onActivate()}
       onFocusCapture={() => onActivate()}
     >
-      {/* 加载状态 */}
-      {isLoading ? (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 select-none pointer-events-none">
-          <Loader2 className="h-10 w-10 animate-spin text-neutral-600 dark:text-white/70" />
-          <p className="text-sm text-neutral-600 dark:text-white/70">{t.processing}</p>
-        </div>
-      ) : media ? (
+      {media ? (
         <>
           {/* 媒体显示区域 */}
           <div
@@ -480,34 +579,44 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
                 className="max-w-none select-none pointer-events-none"
                 draggable={false}
               />
+            ) : media.type === 'animation' ? (
+              <canvas
+                ref={canvasRef}
+                width={media.animation?.renderWidth}
+                height={media.animation?.renderHeight}
+                style={{ width: media.width, height: media.height }}
+                className="max-w-none select-none pointer-events-none"
+                aria-label={label}
+                role="img"
+              />
             ) : (
               <video
                 ref={videoRef}
                 src={media.src}
                 className="max-w-none select-none pointer-events-none"
-                muted={videoControls?.isMuted}
+                muted={dynamicControls?.isMuted}
                 playsInline
                 onLoadedMetadata={(e) => {
-                  if (onVideoControlChange) {
-                    onVideoControlChange({ duration: e.currentTarget.duration });
+                  if (onDynamicControlChange) {
+                    onDynamicControlChange({ duration: e.currentTarget.duration });
                   }
                 }}
                 onTimeUpdate={() => {
-                  if (onVideoControlChange && videoRef.current) {
-                    onVideoControlChange({ currentTime: videoRef.current.currentTime });
+                  if (onDynamicControlChange && videoRef.current) {
+                    onDynamicControlChange({ currentTime: videoRef.current.currentTime });
                   }
                 }}
                 onEnded={() => {
-                  if (onVideoControlChange) {
-                    onVideoControlChange({ isPlaying: false, currentTime: videoControlsRef.current?.duration || 0 });
+                  if (onDynamicControlChange) {
+                    onDynamicControlChange({ isPlaying: false, currentTime: dynamicControlsRef.current?.duration || 0 });
                   }
                 }}
               />
             )}
           </div>
 
-          {/* 视频控制栏 */}
-          {media.type === 'video' && videoControls && onVideoControlChange && (
+          {/* 动态媒体控制栏 */}
+          {media.type !== 'image' && dynamicControls && onDynamicControlChange && (
             <div
               data-gesture-blocker="true"
               className="absolute bottom-12 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2"
@@ -521,24 +630,26 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7 text-neutral-800 dark:text-white"
+                  aria-label={dynamicControls.isPlaying ? t.pause : t.play}
                   onClick={(e) => {
                     e.stopPropagation();
                     onActivate();
                     onTogglePlay?.(side);
                   }}
                 >
-                  {videoControls.isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                  {dynamicControls.isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
                 </Button>
 
                 <div className="flex flex-col w-32 gap-1">
                   <input
-                    data-video-progress="true"
-                    data-video-side={side}
+                    data-dynamic-progress="true"
+                    data-dynamic-side={side}
                     type="range"
                     min={0}
-                    max={videoControls.duration || 100}
+                    max={dynamicControls.duration || 100}
                     step={0.01}
-                    value={videoControls.currentTime}
+                    value={dynamicControls.currentTime}
+                    aria-label={t.playbackProgress}
                     onChange={(e) => {
                       onActivate();
                       onSeek?.(parseFloat(e.target.value));
@@ -554,18 +665,21 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
                   />
                 </div>
 
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-neutral-800 dark:text-white"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onActivate();
-                    onVideoControlChange({ isMuted: !videoControls.isMuted });
-                  }}
-                >
-                  {videoControls.isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-                </Button>
+                {media.type === 'video' && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-neutral-800 dark:text-white"
+                    aria-label={dynamicControls.isMuted ? t.unmute : t.mute}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onActivate();
+                      onDynamicControlChange({ isMuted: !dynamicControls.isMuted });
+                    }}
+                  >
+                    {dynamicControls.isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                  </Button>
+                )}
               </LiquidGlass>
             </div>
           )}
@@ -579,7 +693,7 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
               containerClassName="shrink-0"
               className="px-3 py-1.5 text-xs font-mono text-neutral-800 dark:text-white"
             >
-              {media.width} × {media.height} {media.type === 'video' && `(${Math.floor(videoControls?.currentTime || 0)}s / ${Math.floor(videoControls?.duration || 0)}s)`}
+              {media.width} × {media.height} {media.type !== 'image' && `(${(dynamicControls?.currentTime ?? 0).toFixed(1)}s / ${(dynamicControls?.duration ?? 0).toFixed(1)}s)`}
             </LiquidGlass>
             {/* 文件名信息 */}
             <LiquidGlass
@@ -610,13 +724,14 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
               variant="ghost"
               size="icon"
               className="h-full w-full rounded-none bg-transparent border-none shadow-none text-neutral-600 dark:text-white/70 hover:text-neutral-900 dark:hover:text-white hover:bg-white/20 dark:hover:bg-white/10"
+              aria-label={t.deleteMedia}
               onClick={onDelete}
             >
               <X className="h-4 w-4" />
             </Button>
           </LiquidGlass>
         </>
-      ) : (
+      ) : !isLoading ? (
         /* 上传提示 */
         <label className="absolute inset-0 flex flex-col items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors">
           <div className="flex flex-col items-center gap-2 text-muted-foreground">
@@ -625,8 +740,19 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
               <p className="text-sm">{t.dropOrClick}</p>
             </div>
           </div>
-          <input type="file" accept="image/*,video/*" className="hidden" onChange={handleFileInput} />
+          <input type="file" accept="image/*,video/*,.gif,.png,.apng,.webp" className="hidden" onChange={handleFileInput} />
         </label>
+      ) : null}
+      {showProcessing && (
+        <div
+          className={cn(
+            'absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 select-none pointer-events-none',
+            'bg-background/40 animate-in fade-in duration-200'
+          )}
+        >
+          <Loader2 className="h-10 w-10 animate-spin text-neutral-600 dark:text-white/70" />
+          <p className="text-sm text-neutral-600 dark:text-white/70">{t.processing}</p>
+        </div>
       )}
     </div>
   );
@@ -649,9 +775,9 @@ export function ImageCompare() {
   const [leftMedia, setLeftMedia] = useState<MediaInfo | null>(null);
   const [rightMedia, setRightMedia] = useState<MediaInfo | null>(null);
 
-  // 视频控制状态（每侧独立）
-  const [leftVideoControls, setLeftVideoControls] = useState<VideoControls | undefined>(undefined);
-  const [rightVideoControls, setRightVideoControls] = useState<VideoControls | undefined>(undefined);
+  // 动图和视频的控制状态（每侧独立）
+  const [leftDynamicControls, setLeftDynamicControls] = useState<DynamicControls | undefined>(undefined);
+  const [rightDynamicControls, setRightDynamicControls] = useState<DynamicControls | undefined>(undefined);
 
   // 加载状态
   const [leftLoading, setLeftLoading] = useState(false);
@@ -665,10 +791,12 @@ export function ImageCompare() {
 
   // 同步模式状态
   const [isSynced, setIsSynced] = useState(true);
+  const isSyncedRef = useRef(isSynced);
+  isSyncedRef.current = isSynced;
   const [activePanel, setActivePanel] = useState<PanelSide>('left');
 
-  const leftHasVideo = leftMedia?.type === 'video';
-  const rightHasVideo = rightMedia?.type === 'video';
+  const leftHasDynamic = leftMedia?.type === 'video' || leftMedia?.type === 'animation';
+  const rightHasDynamic = rightMedia?.type === 'video' || rightMedia?.type === 'animation';
 
   // 左右视图状态
   const [leftViewState, setLeftViewState] = useState<ViewState>({
@@ -697,153 +825,108 @@ export function ImageCompare() {
    * 判断当前键盘操作应控制的媒体类型
    */
   const getKeyboardMediaMode = useCallback((left: MediaInfo | null, right: MediaInfo | null): KeyboardMediaMode => {
-    const leftType = left?.type;
-    const rightType = right?.type;
-
-    if (!leftType && !rightType) {
-      return 'none';
-    }
-
-    if (leftType && rightType && leftType !== rightType) {
-      return 'mixed';
-    }
-
-    return leftType ?? rightType ?? 'none';
+    if (left?.type === 'animation' || left?.type === 'video' || right?.type === 'animation' || right?.type === 'video') { return 'dynamic'; }
+    return left || right ? 'image' : 'none';
   }, []);
 
   /**
-   * 限制视频进度范围，避免超出边界
+   * 处理单侧动态媒体控制变化
    */
-  const clampTime = useCallback((time: number, duration: number) => {
-    const safeTime = Number.isFinite(time) ? Math.max(time, 0) : 0;
-    if (!isFinitePositiveNumber(duration)) {
-      return safeTime;
-    }
-    return Math.min(safeTime, duration);
+  const handleLeftDynamicControlChange = useCallback((newControls: Partial<DynamicControls>) => {
+    setLeftDynamicControls(prev => prev ? { ...prev, ...newControls } : prev);
+  }, []);
+
+  const handleRightDynamicControlChange = useCallback((newControls: Partial<DynamicControls>) => {
+    setRightDynamicControls(prev => prev ? { ...prev, ...newControls } : prev);
   }, []);
 
   /**
-   * 处理单侧视频控制变化
+   * 锁定时播放/暂停两侧；自然结束的一侧不影响另一侧。
    */
-  const handleLeftVideoControlChange = useCallback((newControls: Partial<VideoControls>) => {
-    setLeftVideoControls(prev => prev ? { ...prev, ...newControls } : prev);
+  const setAllDynamicPlayback = useCallback((shouldPlay: boolean) => {
+    setLeftDynamicControls(prev => setPlaying(prev, shouldPlay));
+    setRightDynamicControls(prev => setPlaying(prev, shouldPlay));
   }, []);
 
-  const handleRightVideoControlChange = useCallback((newControls: Partial<VideoControls>) => {
-    setRightVideoControls(prev => prev ? { ...prev, ...newControls } : prev);
-  }, []);
-
-  /**
-   * 设置两侧视频播放状态，暂停时不会重播已停止的另一侧。
-   */
-  const setAllVideoPlayback = useCallback((shouldPlay: boolean) => {
-    setLeftVideoControls(prev => prev ? {
-      ...prev,
-      isPlaying: shouldPlay,
-      currentTime: shouldPlay && prev.currentTime >= prev.duration ? 0 : prev.currentTime
-    } : prev);
-    setRightVideoControls(prev => prev ? {
-      ...prev,
-      isPlaying: shouldPlay,
-      currentTime: shouldPlay && prev.currentTime >= prev.duration ? 0 : prev.currentTime
-    } : prev);
-  }, []);
-
-  const toggleAllVideoPlayback = useCallback(() => {
-    const shouldPlay = !(leftVideoControls?.isPlaying || rightVideoControls?.isPlaying);
-    setAllVideoPlayback(shouldPlay);
-  }, [leftVideoControls?.isPlaying, rightVideoControls?.isPlaying, setAllVideoPlayback]);
+  const toggleAllDynamicPlayback = useCallback(() => {
+    const shouldPlay = !(leftDynamicControls?.isPlaying || rightDynamicControls?.isPlaying);
+    setAllDynamicPlayback(shouldPlay);
+  }, [leftDynamicControls?.isPlaying, rightDynamicControls?.isPlaying, setAllDynamicPlayback]);
 
   /**
    * 按比例同步拖动进度条
    * 拖动一侧时，另一侧按相同比例跳转
    */
   const handleLeftSeek = useCallback((time: number) => {
-    setLeftVideoControls(prev => prev ? { ...prev, currentTime: clampTime(time, prev.duration) } : prev);
-    if (
-      isSynced &&
-      leftVideoControls &&
-      rightVideoControls &&
-      Number.isFinite(time) &&
-      isFinitePositiveNumber(leftVideoControls.duration) &&
-      isFinitePositiveNumber(rightVideoControls.duration)
-    ) {
-      // 只有两侧时长都有效时才按比例同步，避免异常元数据传播 NaN/Infinity。
-      const ratio = clampTime(time, leftVideoControls.duration) / leftVideoControls.duration;
-      setRightVideoControls(prev => prev && isFinitePositiveNumber(prev.duration) ? {
+    setLeftDynamicControls(prev => prev ? { ...prev, currentTime: clampTime(time, prev.duration), completedLoops: 0 } : prev);
+    if (leftDynamicControls && rightDynamicControls) {
+      const linkedTime = linkedSeekTime(time, leftDynamicControls.duration, rightDynamicControls.duration, isSynced);
+      if (linkedTime === null) { return; }
+      setRightDynamicControls(prev => prev ? {
         ...prev,
-        currentTime: clampTime(ratio * prev.duration, prev.duration)
+        currentTime: clampTime(linkedTime, prev.duration),
+        completedLoops: 0
       } : prev);
     }
-  }, [clampTime, isSynced, leftVideoControls, rightVideoControls]);
+  }, [isSynced, leftDynamicControls, rightDynamicControls]);
 
   const handleRightSeek = useCallback((time: number) => {
-    setRightVideoControls(prev => prev ? { ...prev, currentTime: clampTime(time, prev.duration) } : prev);
-    if (
-      isSynced &&
-      leftVideoControls &&
-      rightVideoControls &&
-      Number.isFinite(time) &&
-      isFinitePositiveNumber(leftVideoControls.duration) &&
-      isFinitePositiveNumber(rightVideoControls.duration)
-    ) {
-      // 只有两侧时长都有效时才按比例同步，避免异常元数据传播 NaN/Infinity。
-      const ratio = clampTime(time, rightVideoControls.duration) / rightVideoControls.duration;
-      setLeftVideoControls(prev => prev && isFinitePositiveNumber(prev.duration) ? {
+    setRightDynamicControls(prev => prev ? { ...prev, currentTime: clampTime(time, prev.duration), completedLoops: 0 } : prev);
+    if (leftDynamicControls && rightDynamicControls) {
+      const linkedTime = linkedSeekTime(time, rightDynamicControls.duration, leftDynamicControls.duration, isSynced);
+      if (linkedTime === null) { return; }
+      setLeftDynamicControls(prev => prev ? {
         ...prev,
-        currentTime: clampTime(ratio * prev.duration, prev.duration)
+        currentTime: clampTime(linkedTime, prev.duration),
+        completedLoops: 0
       } : prev);
     }
-  }, [clampTime, isSynced, leftVideoControls, rightVideoControls]);
+  }, [isSynced, leftDynamicControls, rightDynamicControls]);
 
   const handleTogglePlay = useCallback((side: PanelSide) => {
     if (isSynced) {
-      toggleAllVideoPlayback();
+      toggleAllDynamicPlayback();
     } else {
-      const setter = side === 'left' ? setLeftVideoControls : setRightVideoControls;
-      setter(prev => prev ? {
-        ...prev,
-        isPlaying: !prev.isPlaying,
-        currentTime: !prev.isPlaying && prev.currentTime >= prev.duration ? 0 : prev.currentTime
-      } : prev);
+      const setter = side === 'left' ? setLeftDynamicControls : setRightDynamicControls;
+      setter(prev => setPlaying(prev, !prev?.isPlaying));
     }
-  }, [isSynced, toggleAllVideoPlayback]);
+  }, [isSynced, toggleAllDynamicPlayback]);
 
-  const getKeyboardVideoSide = useCallback((preferredSide?: PanelSide): PanelSide | null => {
+  const getKeyboardDynamicSide = useCallback((preferredSide?: PanelSide): PanelSide | null => {
     const side = preferredSide ?? activePanel;
-    const hasPreferredVideo = side === 'left' ? leftHasVideo : rightHasVideo;
+    const hasPreferredDynamic = side === 'left' ? leftHasDynamic : rightHasDynamic;
 
-    if (hasPreferredVideo) {
+    if (hasPreferredDynamic) {
       return side;
     }
 
-    if (leftHasVideo) {
+    if (leftHasDynamic) {
       return 'left';
     }
 
-    if (rightHasVideo) {
+    if (rightHasDynamic) {
       return 'right';
     }
 
     return null;
-  }, [activePanel, leftHasVideo, rightHasVideo]);
+  }, [activePanel, leftHasDynamic, rightHasDynamic]);
 
-  const toggleKeyboardVideoPlayback = useCallback((preferredSide?: PanelSide) => {
-    const side = getKeyboardVideoSide(preferredSide);
+  const toggleKeyboardDynamicPlayback = useCallback((preferredSide?: PanelSide) => {
+    const side = getKeyboardDynamicSide(preferredSide);
     if (!side) {
       return;
     }
 
     handleTogglePlay(side);
-  }, [getKeyboardVideoSide, handleTogglePlay]);
+  }, [getKeyboardDynamicSide, handleTogglePlay]);
 
-  const seekKeyboardVideo = useCallback((delta: number) => {
-    const side = getKeyboardVideoSide();
+  const seekKeyboardDynamic = useCallback((delta: number) => {
+    const side = getKeyboardDynamicSide();
     if (!side) {
       return;
     }
 
-    const controls = side === 'left' ? leftVideoControls : rightVideoControls;
+    const controls = side === 'left' ? leftDynamicControls : rightDynamicControls;
     if (!controls) {
       return;
     }
@@ -854,7 +937,7 @@ export function ImageCompare() {
     } else {
       handleRightSeek(nextTime);
     }
-  }, [clampTime, getKeyboardVideoSide, handleLeftSeek, handleRightSeek, leftVideoControls, rightVideoControls]);
+  }, [getKeyboardDynamicSide, handleLeftSeek, handleRightSeek, leftDynamicControls, rightDynamicControls]);
 
   /**
    * 处理视图变化
@@ -892,6 +975,8 @@ export function ImageCompare() {
   // 使用 ref 存储媒体信息，避免闭包问题
   const leftMediaRef = useRef<MediaInfo | null>(null);
   const rightMediaRef = useRef<MediaInfo | null>(null);
+  const uploadSequenceRef = useRef({ left: 0, right: 0 });
+  const uploadControllerRef = useRef<{ left: AbortController | null; right: AbortController | null }>({ left: null, right: null });
 
   useEffect(() => {
     leftMediaRef.current = leftMedia;
@@ -989,118 +1074,102 @@ export function ImageCompare() {
     return Math.min(scaleX, scaleY, 1);
   }, []);
 
-  /**
-   * 处理媒体上传
-   */
+  /** 新文件验证成功后再替换旧媒体，避免失败时丢失原画面。 */
   const handleUpload = useCallback(
-    (file: File, side: PanelSide) => {
+    async(file: File, side: PanelSide) => {
       setActivePanel(side);
-
-      if (side === 'left') {
-        setLeftLoading(true);
-      } else {
-        setRightLoading(true);
-      }
-
-      // 清理旧的 Blob URL
-      const oldUrl = side === 'left' ? leftMediaRef.current?.src : rightMediaRef.current?.src;
-      if (oldUrl && objectUrlsRef.current.has(oldUrl)) {
-        URL.revokeObjectURL(oldUrl);
-        objectUrlsRef.current.delete(oldUrl);
-      }
-
+      uploadControllerRef.current[side]?.abort();
+      const controller = new AbortController();
+      uploadControllerRef.current[side] = controller;
+      const sequence = ++uploadSequenceRef.current[side];
+      if (side === 'left') { setLeftLoading(true); } else { setRightLoading(true); }
       const objectUrl = URL.createObjectURL(file);
-      const isVideo = file.type.startsWith('video/');
+      let committed = false;
+      let animationSession: AnimationSession | null = null;
+      try {
+        let width: number;
+        let height: number;
+        let type: MediaInfo['type'];
+        let duration = 0;
+        let animation: AnimationMetadata | undefined;
 
-      return new Promise((resolve, reject) => {
-        if (isVideo) {
-          const video = document.createElement('video');
-          video.onloadedmetadata = () => {
-            const baseScale = calculateBaseScale(video.videoWidth, video.videoHeight);
-            objectUrlsRef.current.add(objectUrl);
-
-            const mediaInfo: MediaInfo = {
-              src: objectUrl,
-              fileName: file.name,
-              width: video.videoWidth,
-              height: video.videoHeight,
-              baseScale,
-              type: 'video'
-            };
-
-            const videoControls: VideoControls = {
-              isPlaying: false,
-              currentTime: 0,
-              duration: video.duration,
-              isMuted: true
-            };
-
-            if (side === 'left') {
-              setLeftMedia(mediaInfo);
-              setLeftVideoControls(videoControls);
-              setLeftLoading(false);
-            } else {
-              setRightMedia(mediaInfo);
-              setRightVideoControls(videoControls);
-              setRightLoading(false);
-            }
-            resolve(mediaInfo);
-          };
-          video.onerror = () => {
-            URL.revokeObjectURL(objectUrl);
-            if (side === 'left') {
-              setLeftLoading(false);
-            } else {
-              setRightLoading(false);
-            }
-            setToast({ message: t.loadError, type: 'error' });
-            setTimeout(() => setToast(null), 3000);
-            reject(new Error('Video load failed'));
-          };
-          video.src = objectUrl;
+        if (isVideoFile(file)) {
+          const dimensions = await loadDimensions(objectUrl, true, controller.signal);
+          ({ width, height, duration } = dimensions);
+          type = 'video';
         } else {
-          const img = new Image();
-          img.onload = () => {
-            const baseScale = calculateBaseScale(img.naturalWidth, img.naturalHeight);
-
-            objectUrlsRef.current.add(objectUrl);
-
-            const mediaInfo: MediaInfo = {
-              src: objectUrl,
-              fileName: file.name,
-              width: img.naturalWidth,
-              height: img.naturalHeight,
-              baseScale,
-              type: 'image'
-            };
-
-            if (side === 'left') {
-              setLeftMedia(mediaInfo);
-              setLeftVideoControls(undefined);
-              setLeftLoading(false);
-            } else {
-              setRightMedia(mediaInfo);
-              setRightVideoControls(undefined);
-              setRightLoading(false);
-            }
-            resolve(mediaInfo);
-          };
-
-          img.onerror = () => {
-            URL.revokeObjectURL(objectUrl);
-            if (side === 'left') {
-              setLeftLoading(false);
-            } else {
-              setRightLoading(false);
-            }
-            setToast({ message: t.loadError, type: 'error' });
-            setTimeout(() => setToast(null), 3000);
-            reject(new Error('Image load failed'));
-          };
-
-          img.src = objectUrl;
+          if (isAnimationCandidate(file)) {
+            animationSession = await AnimationSession.create(file, controller.signal);
+          }
+          if (animationSession?.metadata) {
+            animation = animationSession.metadata;
+            width = animation.width;
+            height = animation.height;
+            duration = animation.duration;
+            type = 'animation';
+          } else {
+            const dimensions = await loadDimensions(objectUrl, false, controller.signal);
+            width = dimensions.width;
+            height = dimensions.height;
+            type = 'image';
+          }
         }
-      });
+
+        if (controller.signal.aborted || sequence !== uploadSequenceRef.current[side]) { throw cancelledError(); }
+        if (!width || !height) { throw new Error('media-load-failed'); }
+        const mediaInfo: MediaInfo = {
+          src: objectUrl,
+          fileName: file.name,
+          width,
+          height,
+          baseScale: calculateBaseScale(width, height),
+          type,
+          animation,
+          animationSession: animationSession ?? undefined
+        };
+        const dynamicControls: DynamicControls | undefined = type === 'image' ? undefined : {
+          isPlaying: false,
+          currentTime: 0,
+          duration,
+          completedLoops: 0,
+          isMuted: true
+        };
+        const oldMedia = side === 'left' ? leftMediaRef.current : rightMediaRef.current;
+        objectUrlsRef.current.add(objectUrl);
+        committed = true;
+        if (side === 'left') {
+          leftMediaRef.current = mediaInfo;
+          setLeftMedia(mediaInfo);
+          setLeftDynamicControls(dynamicControls);
+          setLeftLoading(false);
+        } else {
+          rightMediaRef.current = mediaInfo;
+          setRightMedia(mediaInfo);
+          setRightDynamicControls(dynamicControls);
+          setRightLoading(false);
+        }
+        if (dynamicControls && isSyncedRef.current) {
+          setLeftDynamicControls(prev => prev ? { ...prev, isPlaying: false, currentTime: 0, completedLoops: 0 } : prev);
+          setRightDynamicControls(prev => prev ? { ...prev, isPlaying: false, currentTime: 0, completedLoops: 0 } : prev);
+        }
+        oldMedia?.animationSession?.dispose();
+        if (oldMedia && objectUrlsRef.current.delete(oldMedia.src)) { URL.revokeObjectURL(oldMedia.src); }
+      } catch (error) {
+        if (sequence === uploadSequenceRef.current[side]) {
+          if (side === 'left') { setLeftLoading(false); } else { setRightLoading(false); }
+          if (!(error instanceof DOMException && error.name === 'AbortError')) {
+            setToast({ message: error instanceof Error && error.message === 'animation-resource-error' ? t.animationResourceError : error instanceof Error && error.message === 'animation-decode-failed' ? t.animationDecodeError : t.loadError, type: 'error' });
+            setTimeout(() => setToast(null), 3000);
+          }
+        }
+        throw error;
+      } finally {
+        if (!committed) {
+          animationSession?.dispose();
+          URL.revokeObjectURL(objectUrl);
+        }
+        if (uploadControllerRef.current[side] === controller) { uploadControllerRef.current[side] = null; }
+      }
     },
     [calculateBaseScale, t]
   );
@@ -1115,8 +1184,8 @@ export function ImageCompare() {
     setLeftViewState(initialState);
     setRightViewState(initialState);
     setIsSynced(true);
-    setLeftVideoControls(prev => prev ? { ...prev, currentTime: 0, isPlaying: false } : prev);
-    setRightVideoControls(prev => prev ? { ...prev, currentTime: 0, isPlaying: false } : prev);
+    setLeftDynamicControls(prev => prev ? { ...prev, currentTime: 0, isPlaying: false, completedLoops: 0 } : prev);
+    setRightDynamicControls(prev => prev ? { ...prev, currentTime: 0, isPlaying: false, completedLoops: 0 } : prev);
   }, []);
 
   /**
@@ -1177,6 +1246,10 @@ export function ImageCompare() {
   // 组件卸载时清理 Blob URL
   useEffect(() => {
     return () => {
+      uploadControllerRef.current.left?.abort();
+      uploadControllerRef.current.right?.abort();
+      leftMediaRef.current?.animationSession?.dispose();
+      rightMediaRef.current?.animationSession?.dispose();
       cleanupAllUrls();
     };
   }, [cleanupAllUrls]);
@@ -1186,8 +1259,12 @@ export function ImageCompare() {
    */
   const handleDeleteMedia = useCallback(
     (side: PanelSide) => {
+      uploadSequenceRef.current[side] += 1;
+      uploadControllerRef.current[side]?.abort();
+      uploadControllerRef.current[side] = null;
       const mediaRef = side === 'left' ? leftMediaRef : rightMediaRef;
       const oldUrl = mediaRef.current?.src;
+      mediaRef.current?.animationSession?.dispose();
       if (oldUrl && objectUrlsRef.current.has(oldUrl)) {
         URL.revokeObjectURL(oldUrl);
         objectUrlsRef.current.delete(oldUrl);
@@ -1196,11 +1273,15 @@ export function ImageCompare() {
       setActivePanel((prev) => prev === side ? (side === 'left' ? 'right' : 'left') : prev);
 
       if (side === 'left') {
+        leftMediaRef.current = null;
         setLeftMedia(null);
-        setLeftVideoControls(undefined);
+        setLeftDynamicControls(undefined);
+        setLeftLoading(false);
       } else {
+        rightMediaRef.current = null;
         setRightMedia(null);
-        setRightVideoControls(undefined);
+        setRightDynamicControls(undefined);
+        setRightLoading(false);
       }
     },
     []
@@ -1210,14 +1291,24 @@ export function ImageCompare() {
    * 清空所有媒体
    */
   const handleClearAll = useCallback(() => {
+    uploadSequenceRef.current.left += 1;
+    uploadSequenceRef.current.right += 1;
+    uploadControllerRef.current.left?.abort();
+    uploadControllerRef.current.right?.abort();
+    uploadControllerRef.current.left = null;
+    uploadControllerRef.current.right = null;
+    leftMediaRef.current?.animationSession?.dispose();
+    rightMediaRef.current?.animationSession?.dispose();
     cleanupAllUrls();
+    leftMediaRef.current = null;
+    rightMediaRef.current = null;
     setLeftMedia(null);
     setRightMedia(null);
     setLeftLoading(false);
     setRightLoading(false);
     handleReset();
-    setLeftVideoControls(undefined);
-    setRightVideoControls(undefined);
+    setLeftDynamicControls(undefined);
+    setRightDynamicControls(undefined);
   }, [cleanupAllUrls, handleReset]);
 
   /**
@@ -1227,6 +1318,10 @@ export function ImageCompare() {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   }, []);
+
+  const handleAnimationError = useCallback((error: Error) => {
+    showToast(error.message === 'animation-resource-error' ? t.animationResourceError : t.animationDecodeError, 'error');
+  }, [showToast, t]);
 
   /**
    * 打开帮助模态框
@@ -1250,29 +1345,15 @@ export function ImageCompare() {
       const items = e.clipboardData?.items;
       if (!items) {return;}
 
-      // 检查剪贴板中是否有图片或视频
-      let hasTarget = false;
-      let targetItem: DataTransferItem | undefined;
-
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.startsWith('image/') || items[i].type.startsWith('video/')) {
-          hasTarget = true;
-          targetItem = items[i];
-          break;
-        }
-      }
-
-      if (!hasTarget || !targetItem) {
+      const file = Array.from(items)
+        .filter((item) => item.kind === 'file')
+        .map((item) => item.getAsFile())
+        .find((item): item is File => item !== null && isSupportedMediaFile(item));
+      if (!file) {
         return;
       }
 
       e.preventDefault();
-
-      const file = targetItem.getAsFile();
-      if (!file) {
-        showToast(t.pasteError, 'error');
-        return;
-      }
 
       // 确定上传到哪一侧
       let targetSide: PanelSide;
@@ -1289,7 +1370,7 @@ export function ImageCompare() {
         const sideName = targetSide === 'left' ? 'A' : 'B';
         showToast(t.pasteSuccess.replace('{side}', sideName), 'success');
       } catch {
-        showToast(t.pasteError, 'error');
+        // 上传流程已经显示了具体错误；取消的旧请求不需要提示。
       }
     },
     [handleUpload, leftMedia, rightMedia, showToast, t]
@@ -1312,10 +1393,10 @@ export function ImageCompare() {
         return;
       }
 
-      if (e.key === ' ' && isVideoProgressTarget(target)) {
+      if (e.key === ' ' && isDynamicProgressTarget(target)) {
         e.preventDefault();
         e.stopPropagation();
-        toggleKeyboardVideoPlayback(getVideoProgressSide(target) ?? undefined);
+        toggleKeyboardDynamicPlayback(getDynamicProgressSide(target) ?? undefined);
         return;
       }
 
@@ -1332,14 +1413,14 @@ export function ImageCompare() {
       const mediaMode = getKeyboardMediaMode(leftMedia, rightMedia);
 
       if (e.key === ' ') {
-        const side = getKeyboardVideoSide();
+        const side = getKeyboardDynamicSide();
         if (!side) {
           return;
         }
 
         e.preventDefault();
         e.stopPropagation();
-        toggleKeyboardVideoPlayback(side);
+        toggleKeyboardDynamicPlayback(side);
         return;
       }
 
@@ -1347,7 +1428,7 @@ export function ImageCompare() {
         return;
       }
 
-      if (mediaMode === 'mixed' || mediaMode === 'none') {
+      if (mediaMode === 'none' || (mediaMode === 'dynamic' && e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) {
         return;
       }
 
@@ -1390,15 +1471,24 @@ export function ImageCompare() {
         return;
       }
 
-      if (mediaMode === 'video' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
-        const delta = e.key === 'ArrowLeft' ? -VIDEO_FRAME_STEP : VIDEO_FRAME_STEP;
-        seekKeyboardVideo(delta);
+      if (mediaMode === 'dynamic' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        const delta = e.key === 'ArrowLeft' ? -DYNAMIC_STEP : DYNAMIC_STEP;
+        seekKeyboardDynamic(delta);
       }
     };
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [getKeyboardMediaMode, getKeyboardVideoSide, leftMedia, rightMedia, seekKeyboardVideo, showHelp, toggleKeyboardVideoPlayback]);
+  }, [getKeyboardMediaMode, getKeyboardDynamicSide, leftMedia, rightMedia, seekKeyboardDynamic, showHelp, toggleKeyboardDynamicPlayback]);
+
+  const handleLeftUpload = useCallback((file: File) => { void handleUpload(file, 'left').catch(() => {}); }, [handleUpload]);
+  const handleRightUpload = useCallback((file: File) => { void handleUpload(file, 'right').catch(() => {}); }, [handleUpload]);
+  const handleLeftDelete = useCallback(() => handleDeleteMedia('left'), [handleDeleteMedia]);
+  const handleRightDelete = useCallback(() => handleDeleteMedia('right'), [handleDeleteMedia]);
+  const handleLeftViewChange = useCallback((state: ViewState) => handleViewChange('left', state), [handleViewChange]);
+  const handleRightViewChange = useCallback((state: ViewState) => handleViewChange('right', state), [handleViewChange]);
+  const activateLeft = useCallback(() => setActivePanel('left'), []);
+  const activateRight = useCallback(() => setActivePanel('right'), []);
 
   return (
     <div className="flex h-dvh flex-col bg-background">
@@ -1484,7 +1574,7 @@ export function ImageCompare() {
           size="sm"
           className="h-7 w-7 rounded-lg px-0 text-xs text-neutral-600 dark:text-white/70 hover:text-neutral-900 dark:hover:text-white hover:bg-white/30 dark:hover:bg-white/20 md:w-auto md:px-3"
           onClick={handleClearAll}
-          disabled={!hasMedia || isLoading}
+          disabled={!hasMedia && !isLoading}
           title={t.clear}
         >
           <X className="h-3.5 w-3.5 md:hidden" />
@@ -1522,19 +1612,20 @@ export function ImageCompare() {
         <div className="min-h-0 flex-1 bg-secondary">
           <MediaPanel
             media={leftMedia}
-            onUpload={(file: File) => handleUpload(file, 'left')}
-            onDelete={() => handleDeleteMedia('left')}
+            onUpload={handleLeftUpload}
+            onDelete={handleLeftDelete}
             viewState={leftViewState}
-            onViewChange={(newState: ViewState) => handleViewChange('left', newState)}
+            onViewChange={handleLeftViewChange}
             side="left"
             label="A"
             isLoading={leftLoading}
             t={t}
             activeTouchCountRef={activeTouchCountRef}
-            onActivate={() => setActivePanel('left')}
-            videoControls={leftMedia?.type === 'video' ? leftVideoControls : undefined}
-            onVideoControlChange={handleLeftVideoControlChange}
+            onActivate={activateLeft}
+            dynamicControls={leftMedia?.type !== 'image' ? leftDynamicControls : undefined}
+            onDynamicControlChange={handleLeftDynamicControlChange}
             onTogglePlay={handleTogglePlay}
+            onAnimationError={handleAnimationError}
             onSeek={handleLeftSeek}
           />
         </div>
@@ -1544,19 +1635,20 @@ export function ImageCompare() {
         <div className="min-h-0 flex-1 bg-secondary">
           <MediaPanel
             media={rightMedia}
-            onUpload={(file: File) => handleUpload(file, 'right')}
-            onDelete={() => handleDeleteMedia('right')}
+            onUpload={handleRightUpload}
+            onDelete={handleRightDelete}
             viewState={rightViewState}
-            onViewChange={(newState: ViewState) => handleViewChange('right', newState)}
+            onViewChange={handleRightViewChange}
             side="right"
             label="B"
             isLoading={rightLoading}
             t={t}
             activeTouchCountRef={activeTouchCountRef}
-            onActivate={() => setActivePanel('right')}
-            videoControls={rightMedia?.type === 'video' ? rightVideoControls : undefined}
-            onVideoControlChange={handleRightVideoControlChange}
+            onActivate={activateRight}
+            dynamicControls={rightMedia?.type !== 'image' ? rightDynamicControls : undefined}
+            onDynamicControlChange={handleRightDynamicControlChange}
             onTogglePlay={handleTogglePlay}
+            onAnimationError={handleAnimationError}
             onSeek={handleRightSeek}
           />
         </div>

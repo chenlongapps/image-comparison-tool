@@ -8,6 +8,7 @@
     "build": "next build --webpack",
     "dev": "next dev --webpack",
     "lint": "eslint . --fix",
+    "test": "vitest run",
     "start": "npx serve out"
   },
   "dependencies": {
@@ -16,17 +17,21 @@
     "@use-gesture/react": "^10.3.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "gifuct-js": "^2.1.2",
     "lucide-react": "^0.454.0",
     "next": "16.0.10",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "tailwind-merge": "^3.3.1"
+    "tailwind-merge": "^3.3.1",
+    "upng-js": "^2.1.0",
+    "webpxmux": "^0.0.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.9",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/upng-js": "^2.1.5",
     "@typescript-eslint/eslint-plugin": "^8.49.0",
     "@typescript-eslint/parser": "^8.49.0",
     "eslint": "^9.39.2",
@@ -35,6 +40,7 @@
     "serve": "^14.2.5",
     "tailwindcss": "^4.1.9",
     "tw-animate-css": "^1.3.3",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^5.0.2"
   }
 }
