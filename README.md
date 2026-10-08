@@ -1,80 +1,83 @@
-# 多媒体对比工具
+<h1 align="center">Image Comparison Tool</h1>
 
-[在线预览](https://chenlongapps.github.io/image-comparison-tool/) | [备用链接](https://image-compare.chenlong716.dpdns.org/)
+<p align="center">A minimal, desktop-focused tool for comparing images, animations, and videos side by side.</p>
 
-一款极简的在线图片、动图与视频对比工具，专为桌面端优化，支持同步缩放、平移和动态媒体联动。
+<p align="center">
+  <a href="https://github.com/chenlongapps/image-comparison-tool/actions/workflows/nextjs.yml"><img alt="GitHub Pages deployment" src="https://img.shields.io/github/actions/workflow/status/chenlongapps/image-comparison-tool/nextjs.yml?style=flat-square&amp;branch=main&amp;label=deploy" /></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" /></a>
+</p>
 
-适用于设计师、摄影师、视频剪辑师等需要精确比较多媒体文件细节的用户。
+<p align="center">
+  <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a><br />
+  <a href="https://chenlongapps.github.io/image-comparison-tool/">Live Demo</a> | <a href="https://image-compare.chenlong716.dpdns.org/">Mirror</a>
+</p>
 
-## 功能特性
+[![Image Comparison Tool preview](image.png)](https://chenlongapps.github.io/image-comparison-tool/)
 
-- **双面板实时对比**：支持静态图片、GIF、APNG、动画 WebP 和视频的任意组合
-- **同步缩放和平移**：鼠标、触控板手势全支持
-- **动图与视频控制**：动图加载后停在首帧；多帧文件可播放、暂停及拖动单次循环进度
-- **联动控制**：锁定时两侧一起播放或暂停，按各自时长的百分比定位；播放速度、循环次数和自然结束各自独立
-- **多种上传方式**：拖拽上传、点击选择、Ctrl+V 粘贴；粘贴时只有原始动图文件能保留动画
-- **深色模式支持**：自动跟随系统
-- **双语国际化**：简体中文 / English
+---
 
-## 快速开始
+## Features
 
-### 环境要求
+- Compare images, GIF, APNG, animated WebP, and videos in any combination.
+- Linked zoom and pan, with independent views for alignment when unlocked.
+- Playback and timeline controls for animations and videos.
+- Drag-and-drop, file picker, and clipboard paste.
+- Local processing in your browser — no file uploads to a server.
+- Automatic dark mode and English / 简体中文 interface.
 
-- Node.js 18.x+
-- npm 9.x+
+## Usage
 
-### 安装启动
+Drop a file onto each panel, click to select, or paste with `Ctrl+V` / `Cmd+V`.
+
+| Action | Control |
+| --- | --- |
+| Pan | Drag or two-finger swipe; arrow keys in image-only mode |
+| Zoom | Mouse wheel, pinch, or `+` / `−` buttons (0.1×–10×) |
+| Play / pause | Playback button or `Space` |
+| Seek | Timeline or `←` / `→` in 0.5-second steps |
+| Reset / clear | Reset restores the view and pauses at the start; Clear removes both files |
+
+Use the lock button to link both panels or control them independently. Linked playback shares play/pause and seeks by the same percentage of each file's duration, not absolute time. Speed, loop counts, and natural endings remain independent.
+
+<details>
+<summary>Animation and clipboard notes</summary>
+
+- Animations load paused on the first frame; single-frame animations behave like static images. Each timeline represents one loop.
+- Paste fills an empty panel first, otherwise replaces the left panel. Animation is preserved only when the clipboard provides the original file; a bitmap is treated as a static image.
+- Animation frames are decoded on demand, limited to 4 million pixels and 4096 pixels per side. Labels show original dimensions. Seeking may take a moment, and downsampling reduces fine detail. Decode failures keep the previously loaded media.
+- Video mute affects only that panel.
+
+</details>
+
+## Development
+
+Recommended: Node.js 22 LTS (22.12+ within the 22.x series) and npm. Built with Next.js, React, and TypeScript.
 
 ```bash
-# 安装依赖
-npm install
-
-# 启动开发服务器
+npm ci
 npm run dev
 ```
 
-访问 http://localhost:3000 查看应用
+Open [localhost:3000](http://localhost:3000).
 
-### 构建部署
+Checks, build, and production preview:
 
 ```bash
-# 构建生产版本（静态导出到 out/）
+npm run lint
+npx tsc --noEmit
+npm test
 npm run build
-
-# 预览生产构建
 npm start
 ```
 
-静态文件将生成在 `out` 目录。部署到子路径时设置 `NEXT_PUBLIC_BASE_PATH`（例如 `/image-comparison-tool`），构建会将 WebP 解码所需的 `webpxmux.wasm` 一起导出。
+Production builds export static files to `out/`, including the animated WebP decoder. For a subpath such as GitHub Pages:
 
-## 使用说明
+```bash
+NEXT_PUBLIC_BASE_PATH=/image-comparison-tool npm run build
+```
 
-### 上传文件
-- **拖拽上传**：拖拽图片、动图或视频到左右面板
-- **点击选择**：点击面板上传区域
-- **粘贴内容**：`Ctrl+V` / `Cmd+V` 粘贴图片或视频（优先空面板，都有时替换左侧）；剪贴板只提供单张位图时按静态图片处理
+See the [GitHub Pages workflow](.github/workflows/nextjs.yml) for deployment.
 
-### 操作手势
-- **鼠标**：拖拽平移内容，滚轮缩放（以鼠标为中心）
-- **触控板**：双指滑动平移内容，双指捏合缩放
-- **按钮**：`+` 放大 `-` 缩小 ↩ 重置 `清空` 移除所有
+## License
 
-### 动图与视频控制
-- **动图**：GIF、APNG、动画 WebP 在加载后停在首帧。静态 PNG、WebP 和单帧 GIF 保持图片体验。
-- **播放与定位**：每侧进度条表示一次循环。锁定时播放、暂停联动，拖动一侧会让另一侧跳到相同百分比；两侧保持原始帧时长或视频速度，一侧结束不影响另一侧。解锁后独立控制。
-- **键盘与重置**：空格键播放或暂停，左右方向键每次调整 0.5 秒，重置会暂停并回到起点。视频静音按钮只控制该侧视频。
-- **动图内存**：动图按需解码，画面最多 400 万像素且单边不超过 4096 像素，尺寸标签仍显示原始尺寸。首次跳到靠后的帧可能需要等待，放大降采样画面时细节会减少。无法解码时会保留原媒体。
-
-### 界面说明
-- **控制栏**：顶部居中，显示缩放比例(0.1x-10x)和功能按钮
-- **面板**：左A右B，面板上方可删除，下方显示尺寸和动态媒体进度
-- **主题**：自动跟随系统深色模式
-- **语言**：点击 `EN`/`中` 切换，自动保存
-
-## 项目截图
-
-![图片对比工具主界面](image.png)
-
-## 许可证
-
-MIT License - 查看 LICENSE 文件了解详情
+[MIT](LICENSE)
