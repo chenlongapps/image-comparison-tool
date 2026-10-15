@@ -1,6 +1,6 @@
 {
   "name": "image-comparison-tool",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "scripts": {
     "clean": "rm -rf node_modules .next out public/sw.js public/sw.js.map public/workbox-*.js public/swe-worker-*.js",
@@ -9,7 +9,10 @@
     "dev": "next dev --webpack",
     "lint": "eslint . --fix",
     "test": "vitest run",
-    "start": "npx serve out"
+    "start": "npx serve out",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version"
   },
   "dependencies": {
     "@ducanh2912/next-pwa": "^10.2.9",
