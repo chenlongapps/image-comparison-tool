@@ -1,6 +1,6 @@
 {
   "name": "image-comparison-tool",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "scripts": {
     "clean": "rm -rf node_modules .next out public/sw.js public/sw.js.map public/workbox-*.js public/swe-worker-*.js",
@@ -9,6 +9,7 @@
     "dev": "next dev --webpack",
     "lint": "eslint . --fix",
     "test": "vitest run",
+    "test:browser": "playwright test",
     "start": "npx serve out",
     "version:patch": "npm version patch --no-git-tag-version",
     "version:minor": "npm version minor --no-git-tag-version",
@@ -30,6 +31,7 @@
     "webpxmux": "^0.0.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/postcss": "^4.1.9",
     "@types/node": "^22",
     "@types/react": "^19",

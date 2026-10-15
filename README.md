@@ -70,6 +70,14 @@ npm run build
 npm start
 ```
 
+Browser regression tests run against the static export (no development server):
+
+```bash
+npx playwright install chromium
+npm run build
+npm run test:browser
+```
+
 Production builds export static files to `out/`, including the animated WebP decoder. For a subpath such as GitHub Pages:
 
 ```bash

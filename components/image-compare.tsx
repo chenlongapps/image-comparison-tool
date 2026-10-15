@@ -255,6 +255,7 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dynamicControlsRef = useRef(dynamicControls);
   dynamicControlsRef.current = dynamicControls;
+  const animationCallbacksRef = useRef({ onAnimationError, onDynamicControlChange });
   const drawnFrameRef = useRef(-1);
   const drawnMediaRef = useRef<MediaInfo | null>(null);
   const [panelWidth, setPanelWidth] = useState(0);
@@ -331,41 +332,53 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
     return () => cancelAnimationFrame(frameRequest);
   }, [media, dynamicControls?.isPlaying, onDynamicControlChange]);
 
+  // 回调随语言、联动状态更新，但不能因此重新消费会话的首帧。
+  useEffect(() => {
+    animationCallbacksRef.current = { onAnimationError, onDynamicControlChange };
+  }, [onAnimationError, onDynamicControlChange]);
+
   /** 首帧和后续画面均由会话持有，绘制后立即关闭 ImageBitmap。 */
   useEffect(() => {
     if (media?.type !== 'animation' || !media.animationSession || !canvasRef.current) {
+      drawnMediaRef.current = null;
+      drawnFrameRef.current = -1;
       setFirstFramePending(false);
       return;
     }
-    // 新动图挂载后首帧还没绘制，此时用遮罩兜住空白画布。
-    setFirstFramePending(true);
-    drawnMediaRef.current = media;
-    drawnFrameRef.current = -1;
-    const context = canvasRef.current.getContext('2d');
-    if (!context) { return; }
-    const first = media.animationSession.takeFirstFrame();
-    if (first) {
-      context.drawImage(first, 0, 0);
-      first.close();
-      drawnFrameRef.current = 0;
-      setFirstFramePending(false);
+    // 仅新媒体初始化遮罩；Strict Mode 重入时保留已绘制的首帧状态。
+    if (drawnMediaRef.current !== media) {
+      drawnMediaRef.current = media;
+      drawnFrameRef.current = -1;
+      setFirstFramePending(true);
     }
-    return media.animationSession.subscribe((bitmap, index) => {
+    const handleError = (error: Error) => {
+      setFirstFramePending(false);
+      animationCallbacksRef.current.onDynamicControlChange?.({ isPlaying: false });
+      animationCallbacksRef.current.onAnimationError(error);
+    };
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      handleError(new Error('animation-resource-error'));
+      return;
+    }
+    const drawFrame = (bitmap: ImageBitmap, index: number) => {
       try {
-        if (drawnMediaRef.current === media && canvasRef.current) {
-          canvasRef.current.getContext('2d')?.drawImage(bitmap, 0, 0);
+        if (drawnMediaRef.current === media && canvasRef.current === canvas) {
+          // 会话输出已合成的完整帧，透明像素也必须替换旧内容。
+          context.clearRect(0, 0, canvas.width, canvas.height);
+          context.drawImage(bitmap, 0, 0);
           drawnFrameRef.current = index;
           setFirstFramePending(false);
         }
       } finally {
         bitmap.close();
       }
-    }, (error) => {
-      setFirstFramePending(false);
-      onDynamicControlChange?.({ isPlaying: false });
-      onAnimationError(error);
-    });
-  }, [media, onAnimationError, onDynamicControlChange]);
+    };
+    const first = media.animationSession.takeFirstFrame();
+    if (first) { drawFrame(first, 0); }
+    return media.animationSession.subscribe(drawFrame, handleError);
+  }, [media]);
 
   // 仅负责请求目标帧：解码期间画布保留上一帧，不切换 loading 状态，
   // 否则播放或拖动进度条时遮罩会按帧率反复明灭，造成屏幕闪烁。

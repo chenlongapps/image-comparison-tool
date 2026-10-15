@@ -50,6 +50,8 @@ lerna-debug.log*
 # 测试相关
 coverage/
 .nyc_output/
+playwright-report/
+test-results/
 
 # 其他
 *.tsbuildinfo

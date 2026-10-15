@@ -70,6 +70,14 @@ npm run build
 npm start
 ```
 
+浏览器回归测试基于静态导出运行，不启动开发服务器：
+
+```bash
+npx playwright install chromium
+npm run build
+npm run test:browser
+```
+
 生产构建将静态文件导出到 `out/`，包含动画 WebP 解码器。部署到 GitHub Pages 等子路径时：
 
 ```bash

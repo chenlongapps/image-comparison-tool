@@ -7,6 +7,8 @@ module.exports = [
       '**/.next/**',          // Next.js 构建缓存
       '**/out/**',            // 输出目录
       '**/dist/**',           // 打包产物
+      '**/playwright-report/**', // 浏览器测试报告
+      '**/test-results/**',   // 浏览器测试产物
       '**/*.config.js',       // 各类 *.config.js 配置文件
       '**/eslint.config.js',  // 自身配置文件
       '**/postcss.config.mjs',// PostCSS 配置文件
