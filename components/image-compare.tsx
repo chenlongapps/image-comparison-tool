@@ -22,20 +22,11 @@ import LiquidGlass from '@/components/ui/liquid-glass';
 import { HelpModal } from '@/components/help-modal';
 import { advanceAnimation, clampTime, frameIndexAtTime, linkedSeekTime, setPlaying, type AnimationMetadata, type PlaybackState } from '@/lib/animation';
 import { AnimationSession } from '@/lib/animation-session';
+import { getMediaDisplayStyles, isSvgFile, type ViewState } from '@/lib/media-display';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { useLoadingVisibility } from '@/lib/use-loading-visibility';
 import type { Translations } from '@/lib/locales';
-
-/**
- * 视图状态接口
- * 记录图片的缩放和平移状态
- */
-interface ViewState {
-  scale: number;    // 缩放比例
-  offsetX: number;  // X 轴偏移量
-  offsetY: number;  // Y 轴偏移量
-}
 
 /**
  * 媒体信息接口
@@ -47,6 +38,7 @@ interface MediaInfo {
   height: number;     // 原始高度
   baseScale: number;  // 基础缩放比例（使媒体适应容器）
   type: 'image' | 'animation' | 'video'; // 媒体类型
+  isSvg: boolean;     // SVG 使用实际尺寸缩放，保留矢量清晰度
   animation?: AnimationMetadata;
   animationSession?: AnimationSession;
 }
@@ -541,8 +533,7 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
     }
   );
 
-  // 计算实际显示的缩放比例（基础缩放 * 视图缩放）
-  const displayScale = media ? viewState.scale * media.baseScale : viewState.scale;
+  const displayStyles = media ? getMediaDisplayStyles(media, viewState) : null;
 
   // 遮罩状态做延迟展示与最短展示时长处理，避免短解码任务造成屏幕闪烁。
   const showProcessing = useLoadingVisibility(isLoading || (firstFramePending && media?.type === 'animation'));
@@ -566,17 +557,14 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
           {/* 媒体显示区域 */}
           <div
             className="absolute inset-0 flex items-center justify-center"
-            style={{
-              transform: `translate(${viewState.offsetX}px, ${viewState.offsetY}px) scale(${displayScale})`,
-              transformOrigin: 'center center',
-              willChange: 'transform'
-            }}
+            style={displayStyles?.container}
           >
             {media.type === 'image' ? (
               <img
                 src={media.src}
                 alt={label}
                 className="max-w-none select-none pointer-events-none"
+                style={displayStyles?.image}
                 draggable={false}
               />
             ) : media.type === 'animation' ? (
@@ -740,7 +728,7 @@ function MediaPanel({ media, onUpload, onDelete, viewState, onViewChange, side, 
               <p className="text-sm">{t.dropOrClick}</p>
             </div>
           </div>
-          <input type="file" accept="image/*,video/*,.gif,.png,.apng,.webp" className="hidden" onChange={handleFileInput} />
+          <input type="file" accept="image/*,video/*,.gif,.png,.apng,.webp,.svg" className="hidden" onChange={handleFileInput} />
         </label>
       ) : null}
       {showProcessing && (
@@ -1124,6 +1112,7 @@ export function ImageCompare() {
           height,
           baseScale: calculateBaseScale(width, height),
           type,
+          isSvg: type === 'image' && isSvgFile(file),
           animation,
           animationSession: animationSession ?? undefined
         };
