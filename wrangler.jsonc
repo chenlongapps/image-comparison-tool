@@ -1,0 +1,9 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "image-compare",
+  "compatibility_date": "2026-10-15",
+  "assets": {
+    "directory": "./out",
+    "not_found_handling": "404-page"
+  }
+}
